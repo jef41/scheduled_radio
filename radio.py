@@ -22,9 +22,11 @@ import datetime
 import subprocess
 #from subprocess import Popen, PIPE, run
 import time
-# import logging
-import urllib.parse
-import sys                              # read arguments passed on command line
+import logging
+from logging.handlers import RotatingFileHandler
+import urllib
+#import sys                              # read arguments passed on command line
+from sys import exit, argv
 import json                             # parse the config file
 #import hashlib                          # compare config file & config string
 # from Adafruit_MAX9744 import MAX9744    # amplifier i2c control
@@ -43,7 +45,32 @@ LOG_FILE = '/home/jdf/radio.log'
 CON_ID = {'host':'/run/mpd/socket'}
 CON_TIMEOUT = 20
 DEBUG = True # enable log file
-WDG_INT = 10  # check stream every # seconds
+WDG_INT = 17  # check stream every # seconds
+
+# def createLog():
+''' set up logging
+    log debug & info to stdout, warn + to file
+'''
+#logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger('radio_app')
+# logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
+
+# show on stdout
+s_handler = logging.StreamHandler()
+s_handler.setLevel(logging.DEBUG)
+# log to file
+f_handler = RotatingFileHandler(
+    LOG_FILE, maxBytes=150000, backupCount=7)
+#f_handler.setLevel(logging.INFO)
+f_handler.setLevel(logging.DEBUG)
+
+formatter = logging.Formatter(
+        '%(asctime)s: %(levelname)-8s %(message)s')
+s_handler.setFormatter(formatter)
+f_handler.setFormatter(formatter)
+logger.addHandler(s_handler)
+logger.addHandler(f_handler)
 
 def debugPrint(instr):
     ''' routine to format and display messages if debug is true
@@ -83,7 +110,7 @@ class ConfigObject():
     # schedule list
     # status, playing/stopped
     # could extend
-    # debugPrint('config class')
+    # logger.debug('config class')
     # init
     # validate config method
     # read config method
@@ -94,9 +121,10 @@ class ConfigObject():
         try:
             settings = self.read_config(cfg_file)
         except Exception as err:
-           debugPrint(f'load settings failed!\n {err}')
+           logger.critical(f'load settings failed!\n {err}')
            self.status = 'init failed'
            # quit here, fatal error
+           quit()
         # debugPrint(settings.items())
         # TD test for settings here or fatal error
         self.volume = settings['volume']
@@ -109,7 +137,7 @@ class ConfigObject():
         '''# read json config file
         # populate config class
         '''
-        debugPrint('read config file')
+        logger.debug('read config file')
         # return (url, volume, events as a list (start_day, start_time, stop_day, stop_time))
         # Open the JSON file
         with open(file, 'r', encoding="utf-8") as f:
@@ -124,7 +152,7 @@ class ConfigObject():
             #TD handle no volume - fatal?
             # fade_secs = data["fade_time"]
             # volume = data["volume"]
-            debugPrint(f'volume: {data["volume"]}')
+            # debugPrint(f'volume: {data["volume"]}')
 
             # Access event values
             events = data["event"]
@@ -137,8 +165,9 @@ class ConfigObject():
                 # if any of these not present then return fatal error
                 
                 if event["start_day"] is None or event["start_time"] is None or event["stop_time"] is None:
-                    debugPrint("A config parameter is missing!")
+                    logger.critical("A config parameter is missing!")
                     # TD return a fatal error
+                    quit()
 
                 if "stop_day" in event:
                     stop_day = event["stop_day"] 
@@ -196,7 +225,7 @@ class ConfigObject():
             # if now > start time & now < end time
             if d_t.time() > t_start.time() and d_t.time() < t_end.time():
                 should_be_playing = True
-                debugPrint(f'should be playing:{should_be_playing}')
+                logger.debug(f'should be playing:{should_be_playing}')
             # debugPrint(f'today is {today[item]["startDOW"]}, start time is {today[item]["startHHMM"]}, end time is {today[item]["stopHHMM"]}, should be playing?:{should_be_playing}')
         return should_be_playing
 
@@ -212,7 +241,7 @@ class ConfigObject():
             if event["intStart"] <= nowInt <= event["intStop"]:
                 should_be_playing = True
                 #debugPrint('should be playing')
-                debugPrint(f'should be playing:{should_be_playing}')
+                logger.debug(f'should be playing:{should_be_playing}')
                 break
         return should_be_playing
 
@@ -228,22 +257,22 @@ def mpdConnect(client, con_id):
             client.connect(**con_id)
             conn = True
         except socket.timeout: # SocketTimeout:
-            debugPrint("socket timed out")
+            logger.error("socket timed out")
             subprocess.call(["sudo", "systemctl", "restart", "mpd"])
-            debugPrint("restarted MPD")
+            logger.debug("restarted MPD")
         except socket.error as msg: # SocketError as msg:
-            debugPrint(f'Socket Error: {str(msg)}')
+            logger.error(f'Socket Error: {str(msg)}')
             conn = False
         except MPDError as msg:
             if str(msg) == "Already connected":
                 conn = True
             else:
-                debugPrint(f'Connection Error: {str(msg)}')
+                logger.error(f'Connection Error: {str(msg)}')
                 conn = False
         else:
             break # stop the attempts
     if conn == False: # end of attempts
-    	debugPrint("connection attempts failed: Fatal error")
+    	logger.critical("connection attempts failed: Fatal error")
     return conn
 
 
@@ -252,7 +281,7 @@ def clear_cron():
     '''
     with CronTab(user=True) as cron:
         cron.remove_all(comment='jdf_radio')
-    debugPrint('deleted cron jobs')
+    logger.info('deleted cron jobs')
 
 
 def set_cron(config, script):
@@ -275,7 +304,7 @@ def set_cron(config, script):
             end_job.dow.on(stop_day[0:3])
             end_job.minute.on(stop_time.split(':')[1])
             end_job.hour.on(stop_time.split(':')[0])
-    debugPrint('cron.write() was just executed')
+    logger.info('cron.write() was just executed')
 
 
 def netConnectionOLD(config):
@@ -300,16 +329,16 @@ def netConnectionOLD(config):
         try:
             # requesting URL
             requests.get(url, timeout=timeout)
-            debugPrint("Internet is connected")
+            logger.info("Internet is connected")
             connected = True
         # catching exception
         except (requests.ConnectionError,
                 requests.Timeout) as exception:
-            debugPrint(f"Internet is not available:\n{exception}")
+            logger.warning(f"Internet is not available:\n{exception}")
             # wait a bit longer
             time.sleep(10)
     os_up = connected & login_up  & mpd_up
-    debugPrint(f'netConnection is {os_up}')
+    logger.debug(f'netConnection is {os_up}')
     return os_up
 
 
@@ -327,29 +356,29 @@ def checkServices():
     mpd_up = True if (stat == 0) else False
 
     os_up = login_up & mpd_up
-    debugPrint(f'checkServices is {os_up}')
+    logger.debug(f'checkServices is {os_up}')
     return os_up
 
 
 def boot():
     '''
     '''
-    debugPrint('start of def boot')
+    logger.debug('start of def boot')
     clear_cron()
     # write cron jobs
-    set_cron(config, str(sys.argv[0]))
+    set_cron(config, str(argv[0]))
     # wait (indefinitely) for network
     # while netConnection(config) is False:
-    debugPrint('boot sequence - check services')
+    logger.info('boot sequence - check services')
     while checkServices() is False:
         time.sleep(5)
         # this will loop indefinitely
         # unless another script or service is trying to start mpd & login
     # check schedule
     # call start if appropriate
-    debugPrint('boot sequence - OS is ready')
+    logger.info('boot sequence - OS is ready')
     if config.checkSchedule():
-        debugPrint('boot sequence - schedule says play')
+        logger.info('boot sequence - schedule says play')
         startStream(config.station)
     else:   
         # play some sound so we know that things are working
@@ -357,11 +386,11 @@ def boot():
         # this should get network working
         player.disconnect()
         if mpdConnect(player, CON_ID):
-            debugPrint('boot sequence - MPD connection')
+            logger.debug('boot sequence - MPD connection')
         else:
-            debugPrint('boot sequence - fail to connect MPD server.')
+            logger.warning('boot sequence - fail to connect MPD server.')
             # clear cron created by this script
-        debugPrint('boot sequence - just play startup')
+        logger.info('boot sequence - play startup sound')
         # player.add(config.station)
         player.add('file:///home/jdf/waterdrops.mp3')
         player.play() # really this should be a soft startup sound
@@ -369,32 +398,35 @@ def boot():
         endStream()
     # finally
     player.disconnect()
-    debugPrint('end of def boot')
+    logger.info('end of boot sequence')
 
 
 def endStream():
     ''' stop playing & clear queue
     '''
     if mpdConnect(player, CON_ID):
-        debugPrint('Got connected!')
+        logger.debug('mpd connected!')
     else:
-        debugPrint('fail to connect MPD server.')
+        logger.error('fail to connect MPD server.')
     player.stop()
     player.clear()
+    # because we clear the playlist the watchdog cannot restart it
+    # if the timings overlap
     player.disconnect()
-    debugPrint('stopped stream')
+    logger.info('stopped stream')
 
 
 def startStream(url):
     ''' 
     '''
     if mpdConnect(player, CON_ID):
-        debugPrint('mpd connected!')
+        logger.debug('mpd connected!')
     else:
-        debugPrint('failed to connect MPD server.')
+        logger.error('failed to connect MPD server.')
     player.add(url)
+    logger.info(f'play: {url}')
     player.play()
-    #wdg(force=True)  # for testing
+    # wdg(force=True)  # for testing
     wdg()
     # wdg should run until stream ends
     # & ensure stream keeps working as long as it should
@@ -402,98 +434,166 @@ def startStream(url):
 
 
 def wdg(force=False):
-    '''
+    ''' try to keep the stream playing
+        & restart if necessary
+        
     '''
     last_elapsed = 0
     restart_reqd = True
     while config.checkSchedule() or force:  # should be playing?
         if mpdConnect(player, CON_ID):
-            debugPrint('MPD wdg connected')
+            logger.debug('MPD wdg connected')
         else:
-            debugPrint('fail to connect MPD server.')
+            logger.error('fail to connect MPD server.')
         status = player.status()
         try:
             if (last_elapsed < float(status["elapsed"]) or last_elapsed + float(status["elapsed"]) == 0):
                 last_elapsed = float(status["elapsed"])
                 restart_reqd = False
-                debugPrint(f'playing OK: {last_elapsed}')
+                logger.debug(f'playing OK: {last_elapsed}')
             else:
                 restart_reqd = True
-                debugPrint(f'elapsed time is stuck {last_elapsed}:{status["elapsed"]}')
+                logger.warning(f'elapsed time is stuck {last_elapsed}:{status["elapsed"]}')
+                last_elapsed = 0
         except KeyError:
-                debugPrint(f'not playing:{status}')
+                logger.warning(f'not playing:{status}')
                 restart_reqd = True
                 # break  # out of try
         finally:
             if restart_reqd:   
                 # check net connection
                 domain = urllib.parse.urlparse(config.station)
-                checkNet(domain)
-                debugPrint('back from checkNet')
+                checkNet(domain.scheme + '://' + domain.netloc)
+                logger.debug('back from checkNet')
+                if mpdConnect(player, CON_ID):
+                    logger.debug('MPD wdg connected')
+                else:
+                    logger.error('failed to connect MPD server.')
                 player.clearerror()
                 # player.add(url)
                 player.stop()
                 player.play()
-                debugPrint('attempted to restart stream')
+                logger.debug('attempted to restart stream')
                 status = player.status() # reload status
                 if "elapsed" in status:
                     # reset elapsed counter
                     last_elapsed = float(status["elapsed"])
+                #time.sleep(2)  # don't spam the website with requests
         player.disconnect()
         time.sleep(WDG_INT)
-    debugPrint('schedule says stop')
+    logger.info('schedule says stop')
 
 
-def checkNet(gw='google.com'):
+def checkNet(gw='https://google.com'):
     ''' check that we have a functional network connection
         if not try by restarting dhcpcp, or rebooting
         will loop until we can ping the target
+        ping was replaced because whilst we can ping google.com
+        otehr sites may not respond to ping
     '''
     ping_worked = False
+    #website_is_up = False
     connected = False
     fail_count = 0
     while not connected:
-        debugPrint('check Network')
-        pw = 2
-        # TD add wait internval - was fail instant or waited for timout
-        for i in range(20):
+        logger.debug('check Network')
+        # pw = 2
+        for i in range(12):
+            status_code = 0
             t_start = time.perf_counter()
-            command = ['ping', '-c', '1', '-W', str(pw), gw]
-            result = subprocess.run(command, capture_output=True, text=True)
-            if result.returncode == 0:
-                ping_worked = True
-                debugPrint('ping test worked')
-                break  # out of for loop
-            else:
-                debugPrint(f'could not ping {gw}')
-                fail_count += 1
-                t_stop = time.perf_counter()
-                elapsed = t_stop - t_start
-                if elapsed < pw:
-                    # we probably received an immediate not accessible
-                    # so wait a little longer before retrying
+            #command = ['ping', '-c', '1', '-W', str(pw), gw]
+            #result = subprocess.run(command, capture_output=True, text=True)
+            try:
+                #status_code = urllib.request.urlopen('https://httpstat.us/random/200,201,500-504').getcode()
+                status_code = urllib.request.urlopen(gw, timeout=3)
+                logger.debug(f'website returns status: {status_code.getcode()}')
+                if status_code.getcode() == 200:
+                    connected = True
+                    break
+                if status_code.getcode() != 200:
+                    #fail_count += 1
+                    connected = False
+                    logger.warning(f'website not responding, code:{status_code}')
                     time.sleep(5)
-        connected = True if ping_worked is True else False
+            except urllib.error.HTTPError as err:
+                logger.warning(f'website responding with an error: {err}')
+                #fail_count += 1
+                connected = False
+                time.sleep(10)
+            except urllib.error.URLError as err:
+                logger.warning(f'wlan interface or website down or invalid url: {err}')
+                #fail_count += 1
+                connected = False
+                time.sleep(10)  # wait longer
+            #except Exception as Argument:
+            #    logger.exception('Error calling urllib, probably an invlaid hostname?')
+            #    time.sleep(10)
+            #    continue
+            #if result.returncode == 0:
+            #    ping_worked = True
+            #    logger.debug('ping test worked')
+            #    break  # out of for loop
+            #else:
+            #    logger.warning(f'could not ping {gw}')
+            #    fail_count += 1
+            #    t_stop = time.perf_counter()
+            #    elapsed = t_stop - t_start
+            #    if elapsed < pw:
+            #        # we probably received an immediate not accessible
+            #        # so wait a little longer before retrying
+            #        time.sleep(5)
+        #connected = True if ping_worked is True else False
+        #connected = website_is_up
         # it could be that the url is down, or that the wifi is not up
-        if not connected:
+        if connected is False:
+            fail_count += 1
+            logger.warning(f'reconnect attempt:{fail_count}')
             # restart network connection
-            if fail_count < 10:
-                debugPrint('restart wlan0')
+            # TD this doesn't work fail_count will always be 12
+            if fail_count == 1:
+                command = ['sudo', 'systemctl', 'restart', 'dhcpcd']
+                result = subprocess.run(command, capture_output=True, text=True)
+                logger.info(f'dhcpcd restart:\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
+            elif fail_count == 2 :
                 #command = ['sudo', 'ip', 'link', 'set', 'wlan0', 'down']
                 #result = subprocess.run(command, capture_output=True, text=True)
                 #debugPrint(f'wlan0 down;\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
                 #command = ['sudo', 'ip', 'link', 'set', 'wlan0', 'up']
                 #result = subprocess.run(command, capture_output=True, text=True)
                 #debugPrint(f'wlan0 up\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
-                command = ['sudo', 'systemctl', 'restart', 'dhcpcd']
+                command = ['sudo', 'systemctl', 'stop', 'dhcpcd']
                 result = subprocess.run(command, capture_output=True, text=True)
-                debugPrint(f'dhcpcd restart:\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
+                logger.info(f'dhcpcd stop:\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
+                time.sleep(2)
+                command = ['sudo', 'systemctl', 'start', 'dhcpcd']
+                result = subprocess.run(command, capture_output=True, text=True)
+                logger.info(f'dhcpcd (re)start:\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
+                #systemctl status dhcpcd.service
+                command = ['sudo', 'systemctl', 'status', 'dhcpcd.service']
+                result = subprocess.run(command, capture_output=True, text=True)
+                logger.debug(f'dhcpcd.service status:\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
+            elif fail_count == 3:
+                command = ['sudo', 'systemctl', 'stop', 'dhcpcd']
+                result = subprocess.run(command, capture_output=True, text=True)
+                logger.debug(f'dhcpcd stop:\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
+                command = ['sudo', 'rm', '/var/lib/dhcpcd/wlan0-*.lease']
+                result = subprocess.run(command, capture_output=True, text=True)
+                logger.debug(f'remove lease:\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
+                time.sleep(2)
+                command = ['sudo', 'systemctl', 'start', 'dhcpcd']
+                result = subprocess.run(command, capture_output=True, text=True)
+                logger.debug(f'dhcpcd (re)start:\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
+                #systemctl status dhcpcd.service
+                command = ['sudo', 'systemctl', 'status', 'dhcpcd.service']
+                result = subprocess.run(command, capture_output=True, text=True)
+                logger.debug(f'dhcpcd.service status:\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
                 # TD print IP')
             else:
                 # we have failed repeatedly with dhcpcd
-                debugPrint('ping has failed for a long time, try a reboot')
+                logger.warning('ping has failed for a long time, try a reboot')
                 command = ['sudo', 'init', '6']
                 result = subprocess.run(command)
+                exit()
     # if we get here should be connected
     # the problem in development was that the USB wifi was someitmes not detected
     # adding usbcore.old_scheme_first=1 
@@ -506,13 +606,13 @@ def test(player):
     #config = ConfigObject(CONFIG_FILE)
     #url = config.station
     if mpdConnect(player, CON_ID):
-        debugPrint('Got connected!')
+        logger.debug('mpd connected!')
     else:
-        debugPrint('fail to connect MPD server.')
+        logger.error('fail to connect MPD server.')
     player.add('file:///home/jdf/waterdrops.mp3')
     #player.clear()
     player.play()
-    debugPrint(player.status())
+    logger.debug(player.status())
     time.sleep(3)
     #debugPrint(player.status())
     #time.sleep(3)
@@ -521,35 +621,41 @@ def test(player):
     player.clear()
     #startStream(url)
     player.disconnect()
+    logger.debug('log debug test stdout only')
+    logger.info('log info test')
+    logger.warning('log warn test')
+    logger.error('log error test')
+    logger.critical('log cricital test')
     
 
 
 # #################### main
 
-debugPrint('\nscript called')
+logger.debug('\nscript called')
 player = MPDClient()
 config = ConfigObject(CONFIG_FILE)
-if mpdConnect(player, CON_ID):
-    debugPrint('MPD connected!')
-else:
-    debugPrint('fail to connect MPD server.')
+#if mpdConnect(player, CON_ID):
+#    logger.debug('MPD connected!')
+#else:
+#    logger.error('failed to connect MPD server.')
 
 if __name__ == "__main__":
+    #createLog()
     # if scriupt is being called directly (rather than imported)
     actions = ('start', 'stop', 'boot', 'test')
-    # debugPrint(f'length;{len(sys.argv)} text:{str(sys.argv)}')
-    if len(sys.argv) >= 2 and str(sys.argv[1]) in actions:
-        debugPrint(str(sys.argv))
+    # debugPrint(f'length;{len(argv)} text:{str(argv)}')
+    if len(argv) >= 2 and str(argv[1]) in actions:
+        logger.debug(str(argv))
         # then call that action
-        #action=locals()[sys.argv[1]]
+        #action=locals()[argv[1]]
         #action()
-        action=sys.argv[1]
+        action=argv[1]
         if action == "boot":
             boot()
         if action == 'start':
             # check if we have a url passed, if not try to read it.
             try:
-                url = sys.argv[2]
+                url = argv[2]
             except IndexError:
                 config = ConfigObject(CONFIG_FILE)
                 url = config.station
@@ -557,5 +663,5 @@ if __name__ == "__main__":
         if action == 'stop':
             endStream()
         if action == 'test':
-            debugPrint('start test')
+            logger.info('start test')
             test(player)
