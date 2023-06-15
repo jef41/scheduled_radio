@@ -76,6 +76,7 @@ logger.addHandler(f_handler)
 def debugPrint(instr):
     ''' routine to format and display messages if debug is true
         TD routine to check file size & trim
+        now uses Python logging
     '''
     col = 35  # magenta debug messages
 
@@ -364,6 +365,61 @@ def checkServices():
     return os_up
 
 
+def checkSNTP():
+    ''' try to validtae that time & date have been updated
+        so timestamp is correct before we check the schedule
+    '''
+    
+    # try to make sure that the time is correct
+    updated = False
+    # systemctl status systemd-timesyncd --no-pager
+    # 
+    count = 0
+    #command = ['systemctl', 'status', 'systemd-timesyncd', '--no-pager']
+    #result = subprocess.run(command, capture_output=True, text=True)
+    #logger.info(f'checkSNTP - systemd-timesyncd status:\n{result.stdout}')
+    while updated is False:
+        try:
+            count +=1
+            command = ['timedatectl']
+            result = subprocess.run(command, capture_output=True, text=True)
+            logger.debug(f'timedatectl returns:\n{result.stdout}')
+            #updated = result.stdout.index('Initial synchronization to time server')
+            updated = result.stdout.index('System clock synchronized: yes')
+        except Exception as err:
+            # probably .index no match found
+            # try waiting a few seconds
+            logger.debug(f'fail count: {count}')
+            time.sleep(1)
+            if count == 5 or (count % 30 == 0):
+                # try restarting service on 5th then every 30 iterations
+                # count = -60
+                #command = ['timedatectl']
+                #result = subprocess.run(command, capture_output=True, text=True)
+                #logger.debug(f'timedatectl returns:\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
+                command = ['sudo', 'systemctl', 'restart', 'systemd-timesyncd']
+                result = subprocess.run(command, capture_output=True, text=True)
+                logger.debug(f'systemd-timesyncd restart:\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
+                command = ['timedatectl']
+                result = subprocess.run(command, capture_output=True, text=True)
+                logger.debug(f'timedatectl returns:\n{result.stdout}\n{result.stderr}')
+                time.sleep(3)  # allow time to be updated
+                logger.warning('boot sequence - timedatectl restarted')
+            elif count >= 2050:
+                #reboot device
+                command = ['sudo', 'init', '6']
+                result = subprocess.run(command)
+                logger.critical('unable to sync time, rebooting')
+                exit()
+
+    # just to confirm:
+    # stat /var/lib/systemd/timesync/clock
+    command = ['stat', '/var/lib/systemd/timesync/clock']
+    result = subprocess.run(command, capture_output=True, text=True)
+    logger.debug(f'checkSNTP - clock stats:\n{result.stdout}')
+    logger.debug('System clock has synchronised')
+
+
 def boot():
     '''
     '''
@@ -383,18 +439,12 @@ def boot():
     logger.info('boot sequence - OS is ready')
     checkNet()
     # this will pause until networking is working
-    # try to make sure that the time is correct
-    command = ['timedatectl']
-    result = subprocess.run(command, capture_output=True, text=True)
-    logger.debug(f'timedatectl returns:\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
-    command = ['sudo', 'systemctl', 'restart', 'systemd-timesyncd']
-    result = subprocess.run(command, capture_output=True, text=True)
-    logger.debug(f'systemd-timesyncd restart:\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
-    command = ['timedatectl']
-    result = subprocess.run(command, capture_output=True, text=True)
-    logger.debug(f'timedatectl returns:\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
-    time.sleep(3)  # allow time to be updated
-    logger.info('boot sequence - timedatectl restarted')
+
+    # check clock is up to date
+    checkSNTP()
+    # this will pause until networking is working
+    logger.info('boot sequence - SNTP updated')
+
     if config.checkSchedule():
         logger.info('boot sequence - schedule says play')
         startStream(config.station)
@@ -442,6 +492,11 @@ def bootSilent():
     # check schedule
     # call start if appropriate
     logger.info('silent boot sequence - OS is ready')
+    # check clock is up to date
+    checkSNTP()
+    # this will pause until networking is working
+    logger.info('boot sequence - SNTP updated')
+       
     if config.checkSchedule():
         logger.info('silent boot sequence - schedule says play')
         startStream(config.station)
