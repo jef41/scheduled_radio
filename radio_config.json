@@ -1,0 +1,12 @@
+{ 
+ "station_url" : "http://media-ice.musicradio.com/ClassicFMMP3",
+ "event" : [
+	{ "start_day": "Monday", "start_time": "09:00", "stop_day": "Monday", "stop_time": "21:40" },
+	{ "start_day": "Tuesday", "start_time": "09:00", "stop_day": "Tuesday", "stop_time": "22:00" },
+	{ "start_day": "Wednesday", "start_time": "12:00", "stop_time": "18:20" },
+	{ "start_day": "Thursday", "start_time": "08:00", "stop_time": "23:20" },
+	{ "start_day": "Friday", "start_time": "08:00", "stop_time": "23:20" },
+	{ "start_day": "Saturday", "start_time": "08:00", "stop_time": "23:20" },
+	{ "start_day": "Sunday", "start_time": "08:00", "stop_time": "23:20" }
+    ]
+}
