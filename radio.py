@@ -20,6 +20,7 @@
 
 import datetime
 import subprocess
+import os
 #from subprocess import Popen, PIPE, run
 import time
 import logging
@@ -40,7 +41,7 @@ import requests                         # check internet connection
 # read calling parameter(s)
 # called by Flask, from cron, start, cron stop, or after boot
 CONFIG_FILE = '/boot/radio_config.json'
-LOG_FILE = '/home/jdf/radio.log'
+LOG_FILE = '/media/log/radio.log'
 #CON_ID = {'host':HOST, 'port':PORT}
 CON_ID = {'host':'/run/mpd/socket'}
 CON_TIMEOUT = 20
@@ -53,8 +54,8 @@ WDG_INT = 17  # check stream every # seconds
 '''
 #logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger('radio_app')
-# logger.setLevel(logging.DEBUG)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
+# logger.setLevel(logging.INFO)
 
 # show on stdout
 s_handler = logging.StreamHandler()
@@ -62,8 +63,8 @@ s_handler.setLevel(logging.DEBUG)
 # log to file
 f_handler = RotatingFileHandler(
     LOG_FILE, maxBytes=150000, backupCount=7)
-#f_handler.setLevel(logging.INFO)
-f_handler.setLevel(logging.DEBUG)
+f_handler.setLevel(logging.INFO)
+# f_handler.setLevel(logging.DEBUG)
 
 formatter = logging.Formatter(
         '%(asctime)s: %(levelname)-8s %(message)s')
@@ -93,6 +94,7 @@ def timeInt(day, hhmm):
     ''' convert input strings to a minute epoch since start of week
         Monday = 0
         Tuesday 15:30 = 1*24*60 + 15*60 + 30 = 2370
+        hhmm format is e.g. 2:45.10
     '''
     weekdays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
     if type(day) is str:
@@ -100,7 +102,8 @@ def timeInt(day, hhmm):
     else:
         weekday = int(day)
     hours = int(hhmm.split(':')[0])
-    minutes = int(hhmm.split(':')[1])
+    minutes = float(hhmm.split(':')[1])
+    # float allows for seconds to be present, though not currenty used
     val = (weekday * 1440) + (hours * 60) + minutes
     return val
 
@@ -127,8 +130,8 @@ class ConfigObject():
            quit()
         # debugPrint(settings.items())
         # TD test for settings here or fatal error
-        self.volume = settings['volume']
-        self.fade_secs = settings['fade_secs']
+        # self.volume = settings['volume']
+        # self.fade_secs = settings['fade_secs']
         self.station = settings['station_url']
         self.schedule = settings['events']
         self.int_schedule = settings['int_events']
@@ -163,7 +166,7 @@ class ConfigObject():
                 #start_time = event["start_time"]  # HH:MM as a time object?
                 #stop_time = event["stop_time"]
                 # if any of these not present then return fatal error
-                
+
                 if event["start_day"] is None or event["start_time"] is None or event["stop_time"] is None:
                     logger.critical("A config parameter is missing!")
                     # TD return a fatal error
@@ -193,15 +196,15 @@ class ConfigObject():
 
         # debugPrint(f'done\n{schedule}')
         settings={
-        	"volume": data["volume"],
-        	"fade_secs": data["fade_time"],
+        	# "volume": data["volume"],
+        	# "fade_secs": data["fade_time"],
         	"station_url": station_url,
         	"events": schedule,
         	"int_events": int_sched
         }
         # settings[events] = schedule
         return settings
-        
+
     def checkScheduleOLD(self):
         '''# check if we should be playing now, return boolean
         # schedule contains dow as 0 = Monday
@@ -236,9 +239,10 @@ class ConfigObject():
         '''
         should_be_playing = False
         d_t = datetime.datetime.now()
+        #nowInt = timeInt(d_t.weekday(), str(d_t.hour) + ':' + str(d_t.minute) + '.' + str(d_t.second))
         nowInt = timeInt(d_t.weekday(), str(d_t.hour) + ':' + str(d_t.minute))
         for event in self.int_schedule:
-            if event["intStart"] <= nowInt <= event["intStop"]:
+            if event["intStart"] <= nowInt < event["intStop"]:
                 should_be_playing = True
                 #debugPrint('should be playing')
                 logger.debug(f'should be playing:{should_be_playing}')
@@ -371,15 +375,35 @@ def boot():
     # while netConnection(config) is False:
     logger.info('boot sequence - check services')
     while checkServices() is False:
-        time.sleep(5)
+        time.sleep(2)
         # this will loop indefinitely
         # unless another script or service is trying to start mpd & login
     # check schedule
     # call start if appropriate
     logger.info('boot sequence - OS is ready')
+    checkNet()
+    # this will pause until networking is working
+    # try to make sure that the time is correct
+    command = ['timedatectl']
+    result = subprocess.run(command, capture_output=True, text=True)
+    logger.debug(f'timedatectl returns:\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
+    command = ['sudo', 'systemctl', 'restart', 'systemd-timesyncd']
+    result = subprocess.run(command, capture_output=True, text=True)
+    logger.debug(f'systemd-timesyncd restart:\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
+    command = ['timedatectl']
+    result = subprocess.run(command, capture_output=True, text=True)
+    logger.debug(f'timedatectl returns:\n\t{result.returncode}\n\t {result.stdout}\n\t {result.stderr}')
+    time.sleep(3)  # allow time to be updated
+    logger.info('boot sequence - timedatectl restarted')
     if config.checkSchedule():
         logger.info('boot sequence - schedule says play')
         startStream(config.station)
+    elif os.path.isfile('/media/log/silent'):
+        # don't play any sound, intended for scheduled reboots
+        logger.info('silent boot sequence')
+        player.disconnect()
+        # checkNet()
+        os.remove('/media/log/silent')
     else:   
         # play some sound so we know that things are working
         checkNet()
@@ -399,6 +423,31 @@ def boot():
     # finally
     player.disconnect()
     logger.info('end of boot sequence')
+
+
+def bootSilent():
+    '''
+    '''
+    logger.debug('start of silent boot')
+    clear_cron()
+    # write cron jobs
+    set_cron(config, str(argv[0]))
+    # wait (indefinitely) for network
+    # while netConnection(config) is False:
+    logger.info('silent boot sequence - check services')
+    while checkServices() is False:
+        time.sleep(5)
+        # this will loop indefinitely
+        # unless another script or service is trying to start mpd & login
+    # check schedule
+    # call start if appropriate
+    logger.info('silent boot sequence - OS is ready')
+    if config.checkSchedule():
+        logger.info('silent boot sequence - schedule says play')
+        startStream(config.station)
+    # finally
+    player.disconnect()
+    logger.info('end of silent boot sequence')
 
 
 def endStream():
@@ -642,7 +691,7 @@ config = ConfigObject(CONFIG_FILE)
 if __name__ == "__main__":
     #createLog()
     # if scriupt is being called directly (rather than imported)
-    actions = ('start', 'stop', 'boot', 'test')
+    actions = ('start', 'stop', 'boot', 'bootsilent', 'test')
     # debugPrint(f'length;{len(argv)} text:{str(argv)}')
     if len(argv) >= 2 and str(argv[1]) in actions:
         logger.debug(str(argv))
@@ -652,6 +701,8 @@ if __name__ == "__main__":
         action=argv[1]
         if action == "boot":
             boot()
+        if action == "bootsilent":
+            bootSilent()
         if action == 'start':
             # check if we have a url passed, if not try to read it.
             try:
