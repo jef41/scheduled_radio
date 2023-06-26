@@ -466,6 +466,7 @@ def boot():
             # clear cron created by this script
         logger.info('boot sequence - play startup sound')
         # player.add(config.station)
+        player.clear() # ensure nothing else in queue
         player.add('file:///home/jdf/waterdrops.mp3')
         player.play() # really this should be a soft startup sound
         time.sleep(5)  
@@ -527,6 +528,7 @@ def startStream(url):
         logger.debug('mpd connected!')
     else:
         logger.error('failed to connect MPD server.')
+    player.clear() # ensure nothing else in queue
     player.add(url)
     logger.info(f'play: {url}')
     player.play()
@@ -553,6 +555,8 @@ def wdg(force=False):
         try:
             if (last_elapsed < float(status["elapsed"]) or last_elapsed + float(status["elapsed"]) == 0):
                 last_elapsed = float(status["elapsed"])
+                if restart_reqd:
+                    logger.info('stream resumed')
                 restart_reqd = False
                 logger.debug(f'playing OK: {last_elapsed}')
             else:
@@ -713,6 +717,7 @@ def test(player):
         logger.debug('mpd connected!')
     else:
         logger.error('fail to connect MPD server.')
+    player.clear() # ensure nothing else in queue
     player.add('file:///home/jdf/waterdrops.mp3')
     #player.clear()
     player.play()
