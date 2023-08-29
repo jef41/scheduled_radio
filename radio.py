@@ -255,7 +255,6 @@ class ConfigObject():
             # debugPrint(f'today is {today[item]["startDOW"]}, start time is {today[item]["startHHMM"]}, end time is {today[item]["stopHHMM"]}, should be playing?:{should_be_playing}')
         return should_be_playing
 
-
     def checkSchedule(self):
         ''' uses an epoch of minutes from start of Monday
             read the schedule & compare integers
@@ -459,7 +458,6 @@ def boot():
         player.play() # really this should be a soft startup sound
         time.sleep(5)  
         endStream()
-        player.disconnect()
     # finally
     player.disconnect()
     logger.info('end of boot sequence')
@@ -525,7 +523,7 @@ def startStream(url):
     wdg()
     # wdg should run until stream ends
     # & ensure stream keeps working as long as it should
-    player.disconnect() 
+    player.disconnect()
 
 
 def wdg(force=False):
@@ -652,10 +650,9 @@ def checkNet(gw='https://google.com/'):
                 logger.debug(f'dhcpcd.service status:{result.returncode}\n\t{result.stdout}\n\t{result.stderr}')
                 command = ['sudo', 'systemctl', 'daemon-reload']
                 result = subprocess.run(command, capture_output=True, text=True)
-                                              
             elif fail_count > 2:
                 # we have failed repeatedly 
-                logger.warning('url test has failed {fail_count} times, try a reboot')
+                logger.warning(f'url test has failed {fail_count} times, try a reboot')
                 command = ['sudo', 'init', '6']
                 result = subprocess.run(command)
                 exit()
@@ -675,7 +672,7 @@ def test(player):
     else:
         logger.error('fail to connect MPD server.')
     player.clear() # ensure nothing else in queue
-    player.add('file:///home/pi/waterdrops.mp3')
+    player.add('file://' + STARTUP_SOUND)
     #player.clear()
     player.play()
     logger.debug(player.status())
