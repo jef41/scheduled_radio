@@ -49,6 +49,11 @@ CONFIG_FILE = '/boot/radio_config.json'
 LOG_FILE = '/home/pi/radio/radio.log'
 SILENT_FILE = '/home/pi/radio/silent'
 STARTUP_SOUND = '/home/pi/radio/waterdrops.mp3'
+
+#LOG_FILE = '/media/log/radio.log'
+#SILENT_FILE = '/media/log/silent'
+#STARTUP_SOUND = '/home/jdf/waterdrops.mp3'
+#CON_ID = {'host':HOST, 'port':PORT}
 CON_ID = {'host':'/run/mpd/socket'}
 CON_TIMEOUT = 20
 DEBUG = True # enable log file
@@ -69,8 +74,8 @@ s_handler.setLevel(logging.DEBUG)
 # log to file
 f_handler = RotatingFileHandler(
     LOG_FILE, maxBytes=150000, backupCount=7)
-f_handler.setLevel(logging.INFO)
-# f_handler.setLevel(logging.DEBUG)
+# f_handler.setLevel(logging.INFO)
+f_handler.setLevel(logging.DEBUG)
 
 formatter = logging.Formatter(
         '%(asctime)s: %(levelname)-8s %(message)s')
@@ -126,7 +131,7 @@ def timeInt(day, hhmm):
         weekday = int(day)
     hours = int(hhmm.split(':')[0])
     minutes = float(hhmm.split(':')[1])
-    # float allows for seconds to be present, though not currenty used
+    # float allows for seconds to be present
     val = (weekday * 1440) + (hours * 60) + minutes
     return val
 
@@ -158,6 +163,7 @@ class ConfigObject():
         self.station = settings['station_url']
         self.schedule = settings['events']
         self.int_schedule = settings['int_events']
+        self.restartRqd = True
 
     def read_config(self, file):
         '''# read json config file
@@ -270,6 +276,38 @@ class ConfigObject():
                 # logger.debug(f'should be playing:{should_be_playing}')
                 break
         return should_be_playing
+    
+    def nextStartStop(self):
+        ''' return secs until next start & stop events
+            smallest positive integer using list comprehension
+            min([i for i in l if i > 0])
+        '''
+        startEvents = []  # a list of week-epoch seconds
+        stopEvents = []  # a list of week-epoch seconds
+        d_t = datetime.datetime.now()
+        nowIntSecs = (timeInt(d_t.weekday(), str(d_t.hour) + ':' + str(d_t.minute))  * 60) + d_t.second
+        #nowInt = timeInt(d_t.weekday(), str(d_t.hour) + ':' + str(d_t.minute))
+        # create a list of seconds until start events 
+        for event in self.int_schedule:
+            secs_to_go = event["intStart"] * 60 - nowIntSecs
+            if secs_to_go < 0:
+                # event has happened already this week, so add a week
+                secs_to_go += 604800 # 1 week in seconds
+                # otherwise we could end up with all events in the past
+            startEvents.append (secs_to_go)
+        # find the minimum positive value in this list
+        nextStart = min([i for i in startEvents if i > 0])
+        # create a list of seconds until stop events 
+        for event in self.int_schedule:
+            secs_to_go = event["intStop"] * 60 - nowIntSecs
+            if secs_to_go < 0:
+                # event has happened already this week, so add a week
+                secs_to_go += 604800 # 1 week in seconds
+                # otherwise we could end up with all events in the past
+            stopEvents.append (secs_to_go)
+        # find the minimum positive value in this list
+        nextStop = min([i for i in stopEvents if i > 0])
+        return (nextStart, nextStop)
 
 
 def mpdConnect(client, con_id):
@@ -413,7 +451,7 @@ def boot():
     logger.debug('start of def boot')
     clear_cron()
     # write cron jobs
-    set_cron(config, str(argv[0]))
+    # svc disable this set_cron(config, str(argv[0]))
     # wait (indefinitely) for network
     # while netConnection(config) is False:
     logger.info('boot sequence - check services')
@@ -458,9 +496,11 @@ def boot():
         player.play() # really this should be a soft startup sound
         time.sleep(5)  
         endStream()
+        player.disconnect()
     # finally
-    player.disconnect()
     logger.info('end of boot sequence')
+    # start the watchdog service
+    wdg_svc(config.nextStartStop())
 
 
 def bootSilent():
@@ -520,11 +560,137 @@ def startStream(url):
     logger.info(f'play: {url}')
     player.play()
     # wdg(force=True)  # for testing
-    wdg()
+    # wdg() # wdg svc remove this
     # wdg should run until stream ends
     # & ensure stream keeps working as long as it should
-    player.disconnect()
+    player.disconnect() 
 
+
+def wdg_svc(cdn_timers, event=False):
+    ''' if script is run as a service then use this function which should run after the boot sequence
+        this def will monitor & will resume, start or stop a stream as appropriate
+        use systemd to keep this script running
+        
+        TD figure out how to incorporate a weekly silent boot into this
+        TD figure out boot sequence & remove cron scheduling
+        TD notes on setting up service
+    '''
+    #restart_reqd = True
+    last_elapsed = 0
+    wdg_secs = 7
+    x_secs = 0
+    secs_until_start, secs_until_stop = cdn_timers
+    while True:
+        #outer loop
+        if event:
+            # load config settings
+            #secs_until_stop = config.nextStart()
+            #secs_until_start = config.nextStop()
+            secs_until_start, secs_until_stop = config.nextStartStop()
+        # assign config settings
+        # secs_until_stop = 0
+        # secs_until_start = 0
+        should_be_playing = config.checkSchedule()
+        if config.checkSchedule() :
+            # should_be_playing:
+            x_secs = wdg_secs
+        else:
+            # set sleep to smallest of
+            x_secs = min(secs_until_stop, secs_until_start)
+        time.sleep(x_secs)
+        # subtract sleep time from counters
+        secs_until_stop -= x_secs
+        secs_until_start -= x_secs
+        if min(secs_until_stop, secs_until_start) < 0:
+            # something has gone wrong, log message
+            logger.warning(f'negative value means a missed event; stop:{secs_until_stop}  start:{secs_until_start}')
+        if secs_until_stop == 0 and secs_until_start == 0:
+            # something has gone wrong, log message
+            logger.warning('both stop and start counter are zero!')
+        if config.checkSchedule():
+            # should be playing
+            # check stream is still running and get result
+            last_elapsed, duration = check_stream(last_elapsed)
+            # subtract duration of test from counters
+            secs_until_stop -= duration
+            secs_until_start -= duration
+            event = False
+        if secs_until_start <= 0:
+            # start stream
+            logger.debug('scheduled to start playing')
+            startStream(config.station)
+            event = True
+        if  secs_until_stop <= 0:
+            # stop stream
+            logger.debug('scheduled to stop playing')
+            endStream()
+            event = True
+
+
+def check_stream(elapsed_secs):
+    ''' test to see if elapsed playtime is incrementing
+        if not try to reconnect
+        return a list of  
+            the latest elapsed time from the player 
+            how long this operation took
+            restart status
+    '''
+    
+    start_time = time.monotonic()
+    if mpdConnect(player, CON_ID):
+        # logger.debug('MPD wdg connected')
+        pass
+    else:
+        logger.error('fail to connect MPD server.')
+    status = player.status()
+    try:
+        if (elapsed_secs < float(status["elapsed"]) or elapsed_secs + float(status["elapsed"]) == 0):
+            elapsed_secs = float(status["elapsed"])
+            if config.restartRqd:
+                logger.info('stream resumed')
+            config.restartRqd = False
+            # logger.debug(f'playing OK: {last_elapsed}')
+        else:
+            config.restartRqd = True
+            logger.warning(f'elapsed time is stuck {elapsed_secs}:{status["elapsed"]}')
+            elapsed_secs = 0
+    except KeyError:
+            logger.warning(f'KeyError, not playing, status:{status}')
+            config.restartRqd = True
+            # break  # out of try
+    finally:
+        # do this whether we had an error or not
+        if config.restartRqd:   
+            # check net connection
+            # this can take some time, so disconnect player,
+            # otherwise we get a broken pipe error after 60 seconds
+            player.disconnect()
+            domain = urllib3.util.parse_url(config.station)  # urllib3.
+            checkNet(domain.scheme + '://' + domain.host + '/')
+            # checkNet(config.station)
+            logger.debug('back from checkNet')
+            if mpdConnect(player, CON_ID):
+                logger.debug('MPD wdg connected')
+            else:
+                logger.error('failed to connect MPD server.')
+            player.clearerror()
+            player.clear()
+            player.add(config.station)
+            player.play()
+            # player.stop()
+            # player.play()
+            logger.debug('attempted to restart stream')
+            status = player.status() # reload status
+            if "elapsed" in status:
+                # reset elapsed counter
+                elapsed_secs = float(status["elapsed"])
+            #time.sleep(2)  # don't spam the website with requests
+    player.disconnect()
+    stop_time = time.monotonic()
+    # return latest elapsed time from player
+    # and how long this test took
+    result = (elapsed_secs, round(stop_time-start_time, 2))
+    return result
 
 def wdg(force=False):
     ''' try to keep the stream playing
@@ -574,6 +740,8 @@ def wdg(force=False):
                 player.clear()
                 player.add(config.station)
                 player.play()
+                # player.stop()
+                # player.play()
                 logger.debug('attempted to restart stream')
                 status = player.status() # reload status
                 if "elapsed" in status:
@@ -650,9 +818,10 @@ def checkNet(gw='https://google.com/'):
                 logger.debug(f'dhcpcd.service status:{result.returncode}\n\t{result.stdout}\n\t{result.stderr}')
                 command = ['sudo', 'systemctl', 'daemon-reload']
                 result = subprocess.run(command, capture_output=True, text=True)
+                                              
             elif fail_count > 2:
                 # we have failed repeatedly 
-                logger.warning(f'url test has failed {fail_count} times, try a reboot')
+                logger.warning('url test has failed {fail_count} times, try a reboot')
                 command = ['sudo', 'init', '6']
                 result = subprocess.run(command)
                 exit()
@@ -667,19 +836,19 @@ def test(player):
     '''
     #config = ConfigObject(CONFIG_FILE)
     #url = config.station
-    if mpdConnect(player, CON_ID):
+    '''if mpdConnect(player, CON_ID):
         logger.debug('mpd connected!')
     else:
         logger.error('fail to connect MPD server.')
     player.clear() # ensure nothing else in queue
-    player.add('file://' + STARTUP_SOUND)
+    player.add('file://' + STARTUP_SOUND)'''
     #player.clear()
-    player.play()
+    '''player.play()
     logger.debug(player.status())
-    time.sleep(3)
+    time.sleep(3)'''
     #debugPrint(player.status())
     #time.sleep(3)
-    player.stop()
+    '''player.stop()
     #debugPrint(player.status())
     player.clear()
     #startStream(url)
@@ -688,7 +857,8 @@ def test(player):
     logger.info('log info test')
     logger.warning('log warn test')
     logger.error('log error test')
-    logger.critical('log cricital test')
+    logger.critical('log cricital test')'''
+    
     
 
 
