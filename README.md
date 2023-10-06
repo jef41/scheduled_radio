@@ -161,7 +161,7 @@ the initial crontab should have entries like:
 	crontab -e
 	# once a day record RAM usage
 	# 0 12 * * * free >> /media/log/radio.log
-	# once a week reboot silently by some magic
+	# once a week reboot silently by creating a file at a location inspected by the script
 	0 3 * * Sun touch /media/log/silent && sudo init 6
 	# 
 ```
