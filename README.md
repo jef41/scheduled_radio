@@ -5,7 +5,7 @@ python script to play a radio station on a schedule
 Designed for a Raspberry Pi Zero to run in read-only mode (using overlay filesystem), headless & unattended. Additional components were a phatDAC and MAX7944 digital amplifier. The Amp was used in analogue mode, though could easily be used in digital, the original design used digital control & fade in/out routines & rotary encoder to set the volume.
 
 ## Operation
-the Python script is called at boot by setting a Cron @reboot parameter (see steps below). The script when called waits for a network conenction & SNTP time sync, if these are not present it loops and tries to restart services. Once these services are running the script parses the radio_config files and updates the user crontab with the schedule. 
+the Python script must be set up as a service so systemd keeps it running. The script when called waits for a network conenction & SNTP time sync, if these are not present it loops and tries to restart services. Once these services are running the script parses the radio_config files and updates internal vairables with the schedule. If the radio is scheduled to be playing the service will start mpd player and then monitor the stream to ensure it is playing. If it is not playing when it should be various services, or the device are restarted until the stream resumes. The stream is also stopped according to the schedule. 
 
 The mpd service is used to play the stream and when running a watchdog tries to ensure that the stream is resumed appropriately after any network interruptions.
 
@@ -115,16 +115,53 @@ to check on open ports at the end of this;
 sudo nmap -sT -p- 192.168.1.64
 ```
 will scan a remote host for any open ports, without '-p-' will scan only the 1000 most popular
-  
+
+### set up as a service
+```
+cd /lib/systemd/system/
+sudo nano /lib/systemd/system/piradio.service
+```
+
+The service definition must be on the /lib/systemd/system folder. Our service is going to be called "piradio.service":
+
+```
+[Unit]
+Description=Radio player
+After=multi-user.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+# fail if restart more than 5 times in 60 seconds
+
+[Service]
+Type=simple
+User=pi
+ExecStart=python3 /home/pi/radio/radio.py boot
+Restart=always
+#on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Now that we have our service we need to activate it:
+
+```
+cd /lib/systemd/system
+sudo chmod 644 piradio.service
+chmod +x /home/pi/radio13.py
+sudo systemctl daemon-reload
+sudo systemctl enable piradio.service
+sudo systemctl start piradio.service
+```
+
 ### Crontab
 the initial crontab should have entries like:
 ```
 	crontab -e
-	# at boot run the radio script
-	@reboot /home/jdf/radio.py boot
 	# once a day record RAM usage
-	0 12 * * * free >> /media/log/radio.log
+	# 0 12 * * * free >> /media/log/radio.log
 	# once a week reboot silently by some magic
 	0 3 * * Sun touch /media/log/silent && sudo init 6
-	# below are created by script
+	# 
 ```
