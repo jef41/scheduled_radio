@@ -18,7 +18,7 @@ Steps below are for setting this up on a Pi Zero
 ## Steps
 install the requirements;
 ```
-sudo apt update && sudo apt install -y fail2ban python3 python3-pip mpd && pip3 install python-mpd2 python-crontabsudo nano /etc/modprobe.d/raspi-blacklist.conf
+sudo apt update && sudo apt install -y fail2ban python3 python3-pip mpd mpc && pip3 install python-mpd2 python-crontab && sudo nano /etc/modprobe.d/raspi-blacklist.conf
 ```
 Configure the DAC, PhatDac setup instructions can be found at; https://learn.pimoroni.com/article/raspberry-pi-phat-dac-install. 
 <details>
@@ -121,7 +121,7 @@ the initial crontab should have entries like:
 ```
 	crontab -e
 	# at boot run the radio script
-	@reboot /home/jdf/radio.py boot
+	@reboot /home/pi/radio.py boot
 	# once a day record RAM usage
 	0 12 * * * free >> /media/log/radio.log
 	# once a week reboot silently by some magic
