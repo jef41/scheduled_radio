@@ -18,6 +18,7 @@
     # boot - wait for network & mpd & user targer, systemd service to ensure we are connected & keep trying
 '''
 from sys import exit, argv
+#import sys
 import datetime
 import subprocess
 import os
@@ -35,6 +36,7 @@ from urllib3 import Retry
 from mpd import (MPDClient,  MPDError)  # CommandError,music player daemon
 
 CONFIG_FILE = '/boot/radio_config.json'
+
 LOG_FILE = '/home/pi/radio/radio.log'
 SILENT_FILE = '/home/pi/radio/silent'
 STARTUP_SOUND = '/home/pi/radio/waterdrops.mp3'
@@ -60,8 +62,8 @@ s_handler.setLevel(logging.DEBUG)
 # log to file
 f_handler = RotatingFileHandler(
     LOG_FILE, maxBytes=150000, backupCount=7)
-f_handler.setLevel(logging.INFO)
-# f_handler.setLevel(logging.DEBUG)
+#f_handler.setLevel(logging.INFO)
+f_handler.setLevel(logging.DEBUG)
 
 formatter = logging.Formatter(
         '%(asctime)s: %(levelname)-8s %(message)s')
@@ -438,7 +440,7 @@ def boot():
 
 
 def bootSilent():
-    ''' this is redundant, cron job used to create silent file & reboot
+    ''' I think this is redundant
     '''
     logger.debug('start of silent boot')
     # clear_cron()
@@ -592,13 +594,14 @@ def check_stream(elapsed_secs):
         # break  # out of try
     finally:
         # do this whether we had an error or not
-        if config.restartRqd:   
+        if config.restartRqd:
             # check net connection
             # this can take some time, so disconnect player,
             # otherwise we get a broken pipe error after 60 seconds
             player.disconnect()
             domain = urllib3.util.parse_url(config.station)  # urllib3.
-            checkNet(domain.scheme + '://' + domain.host + '/')
+            #checkNet(domain.scheme + '://' + domain.host + '/')
+            checkNet(domain.host, domain.scheme)
             # checkNet(config.station)
             logger.debug('back from checkNet')
             if mpdConnect(player, CON_ID):
@@ -625,7 +628,8 @@ def check_stream(elapsed_secs):
     return result
 
 
-def checkNet(gw='https://google.com/'):
+#def checkNet(gw='https://google.com/'):
+def checkNet(host='google.com', protocol='https'):
     ''' check that we have a functional network connection
         if not try by restarting dhcpcp, or rebooting
         will loop until we can ping the target
@@ -633,9 +637,31 @@ def checkNet(gw='https://google.com/'):
         otehr sites may not respond to ping
         timeout after about 60 seconds
     '''
+    port = 443 if protocol == 'https' else 80
     not_connected = True
+    #server_response = "none"
     fail_count = 0
     while not_connected:
+        # attempt socket connection to streaming server
+        args = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+        for family, socktype, proto, canonname, sockaddr in args:
+            s = socket.socket(family, socktype, proto)
+            s.settimeout(CON_TIMEOUT)
+            try:
+                s.connect(sockaddr)
+            except socket.error:
+                #not_connected = True
+                logger.warn("error connecting to socket")
+            except socket.timeout:
+                #not_connected = True
+                logger.warn("socket timeout")
+            else:
+                s.close()
+                not_connected = False
+                logger.debug("socket test OK, host %s, port %i", host, port)
+                # if called with non default host & protocol message above is logged twice, why?
+        '''
+        # this should be changed to use socket on 80 or 443
         logger.debug('check Network')
         session = requests.Session()
         adapter = TimeoutHTTPAdapter(timeout=(3, 6), max_retries=Retry(
@@ -656,8 +682,9 @@ def checkNet(gw='https://google.com/'):
             # not_connected = r
             stop_time = time.monotonic()
             logger.debug("%s seconds", round(stop_time-start_time, 2))
-            test_list = [401,200,201,202,203,204,205,206,207,208,300,301,302,307,308]
+            test_list = [401,403,200,201,202,203,204,205,206,207,208,300,301,302,307,308]
             if (hasattr(r, 'status_code') and r.status_code in test_list):
+                server_response = r.status_code
                 not_connected = False
                 r.close()
             else:
@@ -669,9 +696,11 @@ def checkNet(gw='https://google.com/'):
             #continue
         #finally:
         # return is like "<Response [200]>" or [401]
+        '''
         if not_connected:
             fail_count += 1
-            logger.info('reconnect attempt %s failed', fail_count)
+            #logger.info('reconnect attempt %s failed. Server response: %s', fail_count, server_response)
+            logger.info('reconnect attempt %s failed. Server response: %s', fail_count)
             # restart network connection
             if fail_count == 2:
                 # stop dhcpd, remove lease, restart
@@ -698,6 +727,10 @@ def checkNet(gw='https://google.com/'):
                 command = ['sudo', 'init', '6']
                 result = subprocess.run(command, check=False)
                 exit()
+    else:
+        # we have a connection
+        logger.debug("conection confirmed, return")
+        return
     # if we get here should be connected
     # the problem in development was that the USB wifi was someitmes not detected
     # adding usbcore.old_scheme_first=1 
