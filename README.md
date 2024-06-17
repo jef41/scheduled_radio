@@ -18,7 +18,7 @@ Steps below are for setting this up on a Pi Zero
 ## Steps
 install the requirements;
 ```
-sudo apt update && sudo apt install -y fail2ban python3 python3-pip mpd && pip3 install python-mpd2 python-crontabsudo nano /etc/modprobe.d/raspi-blacklist.conf
+sudo apt update && sudo apt install -y fail2ban python3 python3-pip mpd mpc && pip3 install python-mpd2 python-crontab && sudo nano /etc/modprobe.d/raspi-blacklist.conf
 ```
 Configure the DAC, PhatDac setup instructions can be found at; https://learn.pimoroni.com/article/raspberry-pi-phat-dac-install. 
 <details>
@@ -135,7 +135,7 @@ StartLimitBurst=5
 [Service]
 Type=simple
 User=pi
-ExecStart=python3 /home/pi/radio/radio.py boot
+ExecStart=python3 /home/pi/radio.py boot
 Restart=always
 #on-failure
 RestartSec=3
@@ -149,7 +149,7 @@ Now that we have our service we need to activate it:
 ```
 cd /lib/systemd/system
 sudo chmod 644 piradio.service
-chmod +x /home/pi/radio13.py
+chmod +x /home/pi/radio.py
 sudo systemctl daemon-reload
 sudo systemctl enable piradio.service
 sudo systemctl start piradio.service
