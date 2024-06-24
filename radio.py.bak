@@ -577,18 +577,11 @@ def check_stream(elapsed_secs):
         logger.error('fail to connect MPD server.')
     status = player.status()
     try:
-        addntl_msg = ""
-        playing_secs = float(status["elapsed"])
-        if (elapsed_secs < playing_secs
-             or elapsed_secs + playing_secs == 0):
-            elapsed_secs = playing_secs
-            if elapsed_secs == 0:
-                logger.debug('0 seconds, this is first run or mpd has failed and not restarted')
-                # artificially nudge elapsed time, on next run if playing_secs is still at 0, then will be detected
-                elapsed_secs += 1
-                addntl_msg = ", 0secs detected, possible stall"
+        if (elapsed_secs < float(status["elapsed"])
+             or elapsed_secs + float(status["elapsed"]) == 0):
+            elapsed_secs = float(status["elapsed"])
             if config.restartRqd:
-                logger.info('stream resumed %s', addntl_msg)
+                logger.info('stream resumed')
             config.restartRqd = False
             # logger.debug(f'playing OK: {last_elapsed}')
         else:
@@ -736,7 +729,7 @@ def checkNet(host='google.com', protocol='https'):
                 exit()
     else:
         # we have a connection
-        logger.debug("connection confirmed, return")
+        logger.debug("conection confirmed, return")
         return
     # if we get here should be connected
     # the problem in development was that the USB wifi was someitmes not detected
@@ -745,7 +738,7 @@ def checkNet(host='google.com', protocol='https'):
 
 
 def test(player):
-    ''' just a test def
+    ''' jsut a test def
     '''
     #config = ConfigObject(CONFIG_FILE)
     #url = config.station
