@@ -62,8 +62,8 @@ s_handler.setLevel(logging.DEBUG)
 # log to file
 f_handler = RotatingFileHandler(
     LOG_FILE, maxBytes=150000, backupCount=7)
-#f_handler.setLevel(logging.INFO)
-f_handler.setLevel(logging.DEBUG)
+f_handler.setLevel(logging.INFO)
+#f_handler.setLevel(logging.DEBUG)
 
 formatter = logging.Formatter(
         '%(asctime)s: %(levelname)-8s %(message)s')
@@ -398,15 +398,17 @@ def boot():
     # check schedule
     # call start if appropriate
     logger.info('boot sequence - OS is ready')
-    checkNet()
+    if checkNet() == True:
+        logger.info('boot sequence - network test OK')
     # this will pause until networking is working
 
     # check clock is up to date
     checkSNTP()
-    # this will pause until networking is working
+    # this will pause until time has been updated
     logger.info('boot sequence - SNTP updated')
 
     if config.checkSchedule():
+        # schedule says we should be playing music, so...
         logger.info('boot sequence - schedule says play')
         startStream(config.station)
     elif os.path.isfile(SILENT_FILE):
@@ -417,7 +419,7 @@ def boot():
         os.remove(SILENT_FILE)
     else:
         # play some sound so we know that things are working
-        checkNet()
+        #checkNet()
         # this should get network working
         player.disconnect()
         if mpdConnect(player, CON_ID):
@@ -434,7 +436,7 @@ def boot():
         endStream()
         player.disconnect()
     # finally
-    logger.info('end of boot sequence')
+    logger.info('boot sequence - complete')
     # start the watchdog service
     wdg_svc(config.nextStartStop())
 
@@ -608,6 +610,7 @@ def check_stream(elapsed_secs):
             player.disconnect()
             domain = urllib3.util.parse_url(config.station)  # urllib3.
             #checkNet(domain.scheme + '://' + domain.host + '/')
+            logger.debug('calling checkNet; %s %s', domain.host, domain.scheme)
             checkNet(domain.host, domain.scheme)
             # checkNet(config.station)
             logger.debug('back from checkNet')
@@ -636,7 +639,7 @@ def check_stream(elapsed_secs):
 
 
 #def checkNet(gw='https://google.com/'):
-def checkNet(host='google.com', protocol='https'):
+def checkNet(host='google.com', protocol='http'):
     ''' check that we have a functional network connection
         if not try by restarting dhcpcp, or rebooting
         will loop until we can ping the target
@@ -648,6 +651,7 @@ def checkNet(host='google.com', protocol='https'):
     not_connected = True
     #server_response = "none"
     fail_count = 0
+    logger.debug('check Network')
     while not_connected:
         # attempt socket connection to streaming server
         args = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
@@ -656,17 +660,19 @@ def checkNet(host='google.com', protocol='https'):
             s.settimeout(CON_TIMEOUT)
             try:
                 s.connect(sockaddr)
-            except socket.error:
+            except socket.error as msg:
                 #not_connected = True
-                logger.warn("error connecting to socket")
-            except socket.timeout:
-                #not_connected = True
-                logger.warn("socket timeout")
+                logger.warn("error connecting to socket; %s", msg)
+            #except socket.timeout:
+            # above line catches timeout
+            #    #not_connected = True
+            #    logger.warn("socket timeout")
             else:
                 s.close()
                 not_connected = False
                 logger.debug("socket test OK, host %s, port %i", host, port)
                 # if called with non default host & protocol message above is logged twice, why?
+        
         '''
         # this should be changed to use socket on 80 or 443
         logger.debug('check Network')
@@ -736,8 +742,8 @@ def checkNet(host='google.com', protocol='https'):
                 exit()
     else:
         # we have a connection
-        logger.debug("connection confirmed, return")
-        return
+        logger.debug("Network connection confirmed, return")
+        return True
     # if we get here should be connected
     # the problem in development was that the USB wifi was someitmes not detected
     # adding usbcore.old_scheme_first=1 
@@ -789,7 +795,7 @@ if __name__ == "__main__":
     actions = ('start', 'stop', 'boot', 'bootsilent', 'test')
     # debugPrint(f'length;{len(argv)} text:{str(argv)}')
     if len(argv) >= 2 and str(argv[1]) in actions:
-        logger.debug(str(argv))
+        logger.debug("arguments passed: %s", str(argv))
         # then call that action
         #action=locals()[argv[1]]
         #action()
