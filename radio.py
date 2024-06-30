@@ -4,16 +4,8 @@
     #
     #    $ sudo apt-get install mpc mpd -y
     #    $ sudo apt-get alsa -y
-
     #    pip3 install python-mpd2
-    #    pip3 install python-crontab
     # read-only FS
-    # requires cron, mpd.log, config to be R/W partition
-    # cron to call this at boot - boot
-    # cron to regularly check network connection, restore then call with init
-    # cron to keep time up to date on pi
-    # fail2ban to protect system
-    # job to regularly check network connection & reconnect if down
     # systemd to run at boot & when ready
     # boot - wait for network & mpd & user targer, systemd service to ensure we are connected & keep trying
 '''
@@ -54,11 +46,12 @@ WDG_INT = 5  # check stream every # seconds
 #logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger('radio_app')
 logger.setLevel(logging.DEBUG)
-# logger.setLevel(logging.INFO)
+#logger.setLevel(logging.INFO)
 
 # show on stdout
 s_handler = logging.StreamHandler()
 s_handler.setLevel(logging.DEBUG)
+#s_handler.setLevel(logging.INFO)                               
 # log to file
 f_handler = RotatingFileHandler(
     LOG_FILE, maxBytes=150000, backupCount=7)
@@ -154,6 +147,8 @@ class ConfigObject():
         self.schedule = settings['events']
         self.int_schedule = settings['int_events']
         self.restartRqd = True
+        self.stallCount = 0
+        self.errCount = 0
 
     def read_config(self, file):
         '''# read json config file
@@ -253,7 +248,7 @@ class ConfigObject():
         nowIntSecs = (timeInt(d_t.weekday(),
                                str(d_t.hour) + ':' + str(d_t.minute))  * 60) + d_t.second
         #nowInt = timeInt(d_t.weekday(), str(d_t.hour) + ':' + str(d_t.minute))
-        # create a list of seconds until start events 
+        # create a list of seconds until start events
         for event in self.int_schedule:
             secs_to_go = event["intStart"] * 60 - nowIntSecs
             if secs_to_go < 0:
@@ -505,7 +500,7 @@ def startStream(url_stream):
 
 
 def wdg_svc(cdn_timers, event=False):
-    ''' if script is run as a service then use this function 
+    ''' if script is run as a service then use this function
         which should run after the boot sequence
         this def will monitor & will resume, start or stop a stream as appropriate
         use systemd to keep this script running
@@ -563,11 +558,11 @@ def wdg_svc(cdn_timers, event=False):
             event = True
 
 
-def check_stream(elapsed_secs):
+def check_stream(last_elapsed_secs):
     ''' test to see if elapsed playtime is incrementing
         if not try to reconnect
-        return a list of  
-            the latest elapsed time from the player 
+        return a list of
+            the latest elapsed time from the player
             how long this operation took
             restart status
     '''
@@ -578,28 +573,50 @@ def check_stream(elapsed_secs):
     else:
         logger.error('fail to connect MPD server.')
     status = player.status()
+    
     try:
-        addntl_msg = ""
         playing_secs = float(status["elapsed"])
-        if (elapsed_secs < playing_secs
-             or elapsed_secs + playing_secs == 0):
-            elapsed_secs = playing_secs
-            if elapsed_secs == 0:
+        config.errCount = 0
+    except KeyError:
+        config.errCount += 1
+        # don't sam the log every wdg interval
+        if config.stallCount == 1:
+            logger.warning('KeyError, not playing')
+            logger.debug('status:%s', status)
+        playing_secs = 0
+    
+    if playing_secs > 0:
+        # mpc playing time is incrementing
+        config.stallCount = 0
+    try:
+        #playing_secs = float(status["elapsed"])
+        if (playing_secs > last_elapsed_secs
+             or last_elapsed_secs + playing_secs == 0):
+            # then we *should* be playing OK
+            # last_elapsed_secs + playing_secs == 0 can happen on first start/restart
+            last_elapsed_secs = playing_secs
+            if last_elapsed_secs == 0:
                 logger.debug('0 seconds, this is first run or mpd has failed and not restarted')
                 # artificially nudge elapsed time, on next run if playing_secs is still at 0, then will be detected
-                elapsed_secs += 1
-                addntl_msg = ", 0secs detected, possible stall"
-            if config.restartRqd:
-                logger.info('stream resumed %s', addntl_msg)
+                last_elapsed_secs = WDG_INT/10  # dummy value that is less than watchdog interval, but more than 0
+                #addntl_msg = ", 0secs elapsed, stalled?"
+                # this should be picked up on next wdg check
+                config.stallCount +=1
+            if config.restartRqd and config.stallCount == 0:
+                logger.info('stream resumed')
+            # reset the flag
             config.restartRqd = False
             # logger.debug(f'playing OK: {last_elapsed}')
         else:
             config.restartRqd = True
-            logger.warning('elapsed time is stuck %.3f:%s', elapsed_secs, status["elapsed"])
-            elapsed_secs = 0
-    except KeyError:
-        logger.warning('KeyError, not playing, status:%s', status)
-        config.restartRqd = True
+            if last_elapsed_secs != WDG_INT/10:
+                # no need to spam the log if stream is stuck
+                logger.warning('elapsed time is stuck %.3f:%s', last_elapsed_secs, playing_secs)
+            last_elapsed_secs = WDG_INT/10  # dummy value that is less than watchdog interval, but more than 0
+    #except KeyError:
+    #    logger.warning('KeyError, not playing')
+    #    logger.debug('status:%s', status)
+    #    config.restartRqd = True
         # break  # out of try
     finally:
         # do this whether we had an error or not
@@ -628,13 +645,35 @@ def check_stream(elapsed_secs):
             status = player.status() # reload status
             if "elapsed" in status:
                 # reset elapsed counter
-                elapsed_secs = float(status["elapsed"])
+                last_elapsed_secs = 0
             #time.sleep(2)  # don't spam the website with requests
+        if config.stallCount > 0 and config.stallCount % 5 == 0:
+            # stream seems to have stalled 5 times
+            # ie can open socket, but cannot start stream
+            # bandwidth limit, problem with stream url or problem with network?
+            logger.info('mpc stalled')
+            player.disconnect()
+            logger.debug('restart networking')
+            restartNetworking()
+            logger.debug('back from restartNetworking')
+            if mpdConnect(player, CON_ID):
+                logger.debug('MPD wdg connected')
+            else:
+                logger.error('failed to connect MPD server.')
+            player.clearerror()
+            player.clear()
+            player.add(config.station)
+            player.play()
+            logger.debug('attempted to restart stream')
+            status = player.status() # reload status
+            if "elapsed" in status:
+                # reset elapsed counter
+                last_elapsed_secs = 0
     player.disconnect()
     stop_time = time.monotonic()
     # return latest elapsed time from player
     # and how long this test took
-    result = (elapsed_secs, round(stop_time-start_time, 2))
+    result = (last_elapsed_secs, round(stop_time-start_time, 2))
     return result
 
 
@@ -643,8 +682,9 @@ def checkNet(host='google.com', protocol='http'):
     ''' check that we have a functional network connection
         if not try by restarting dhcpcp, or rebooting
         will loop until we can ping the target
-        ping was replaced because whilst we can ping google.com
-        otehr sites may not respond to ping
+        opening a socket shows connectivity, but does not test bandwidth
+        the previous HTTP session approach requires bandwitdth
+        using the socket test should mean fewer unnecessary restarts ie when network is available, but bandwidth is not
         timeout after about 60 seconds
     '''
     port = 443 if protocol == 'https' else 80
@@ -654,31 +694,36 @@ def checkNet(host='google.com', protocol='http'):
     logger.debug('check Network')
     while not_connected:
         # attempt socket connection to streaming server
-        args = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
-        for family, socktype, proto, canonname, sockaddr in args:
-            s = socket.socket(family, socktype, proto)
-            s.settimeout(CON_TIMEOUT)
-            try:
-                s.connect(sockaddr)
-            except socket.error as msg:
-                #not_connected = True
-                logger.warn("error connecting to socket; %s", msg)
-            #except socket.timeout:
-            # above line catches timeout
-            #    #not_connected = True
-            #    logger.warn("socket timeout")
-            else:
-                s.close()
-                not_connected = False
-                logger.debug("socket test OK, host %s, port %i", host, port)
-                # if called with non default host & protocol message above is logged twice, why?
-        
+        try:
+            args = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+            for family, socktype, proto, canonname, sockaddr in args:
+                s = socket.socket(family, socktype, proto)
+                s.settimeout(CON_TIMEOUT)
+        #try:
+            s.connect(sockaddr)
+        except socket.error as msg:
+            #not_connected = True
+            logger.warning("error connecting to socket; %s", msg)
+        except socket.gaierror as msg:
+            # failure in name resolution
+            logger.warning("socket.gaierror; %s", msg)
+        except socket.timeout:
+            logger.warning("socket timeout")
+        except Exception as err:
+            # anything else
+            logger.warning("socket error:%s", err)
+        else:
+            s.close()
+            not_connected = False
+            logger.debug("socket test OK, host %s, port %i", host, port)
+            # if called with non default host & protocol message above is logged twice, why?
+
         '''
         # this should be changed to use socket on 80 or 443
         logger.debug('check Network')
         session = requests.Session()
         adapter = TimeoutHTTPAdapter(timeout=(3, 6), max_retries=Retry(
-            total=15, 
+            total=15,
             backoff_factor=0,
             status_forcelist=[429, 500, 502, 503, 504]))
         session.mount("http://", adapter)
@@ -713,10 +758,12 @@ def checkNet(host='google.com', protocol='http'):
         if not_connected:
             fail_count += 1
             #logger.info('reconnect attempt %s failed. Server response: %s', fail_count, server_response)
-            logger.info('reconnect attempt %s failed. Server response: %s', fail_count)
+            logger.info('reconnect attempt %s failed.', fail_count)
             # restart network connection
-            if fail_count == 2:
-                # stop dhcpd, remove lease, restart
+            restartNetworking(fail_count)
+            #if fail_count == 2:
+            '''if 2 <= fail_count <= 3:
+                # if 2 or 3 fails; stop dhcpd, remove lease, restart
                 command = ['sudo', 'systemctl', 'stop', 'dhcpcd']
                 result = subprocess.run(command, capture_output=True, text=True, check=False)
                 logger.debug('dhcpcd stop:%s\n\t%s\n\t%s',
@@ -734,20 +781,48 @@ def checkNet(host='google.com', protocol='http'):
                              result.returncode, result.stdout, result.stderr)
                 command = ['sudo', 'systemctl', 'daemon-reload']
                 result = subprocess.run(command, capture_output=True, text=True, check=False)
-            elif fail_count > 2:
-                # we have failed repeatedly 
+            elif fail_count > 3:
+                # we have failed repeatedly, restart
                 logger.warning('url test has failed %d times, try a reboot', fail_count)
                 command = ['sudo', 'init', '6']
                 result = subprocess.run(command, check=False)
-                exit()
+                exit()'''
     else:
         # we have a connection
         logger.debug("Network connection confirmed, return")
         return True
     # if we get here should be connected
     # the problem in development was that the USB wifi was someitmes not detected
-    # adding usbcore.old_scheme_first=1 
+    # adding usbcore.old_scheme_first=1
     # to /boot/cmdline.txt resolved that
+
+
+def restartNetworking(fail_count=2):
+    if 2 <= fail_count <= 3:
+        # if 2 or 3 fails; stop dhcpd, remove lease, restart
+        command = ['sudo', 'systemctl', 'stop', 'dhcpcd']
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        #logger.debug('dhcpcd stop:%s\n\t%s\n\t%s',
+        #             result.returncode,
+        #             result.stdout,
+        #             result.stderr)
+        command = ['sudo', 'systemctl', 'start', 'dhcpcd']
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        #logger.debug('dhcpcd (re)start:%s\n\t%s\n\t%s', 
+        #             result.returncode, result.stdout, result.stderr)
+        #systemctl status dhcpcd.service
+        command = ['sudo', 'systemctl', 'status', 'dhcpcd.service']
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        #logger.debug('dhcpcd.service status:%s\n\t%s\n\t%s',
+        #             result.returncode, result.stdout, result.stderr)
+        #command = ['sudo', 'systemctl', 'daemon-reload']
+        #result = subprocess.run(command, capture_output=True, text=True, check=False)
+    elif fail_count > 3:
+        # we have failed repeatedly, restart
+        logger.warning('url test has failed %d times, try a reboot', fail_count)
+        command = ['sudo', 'init', '6']
+        result = subprocess.run(command, check=False)
+        exit()
 
 
 def test(player):

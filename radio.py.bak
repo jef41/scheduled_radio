@@ -62,8 +62,8 @@ s_handler.setLevel(logging.DEBUG)
 # log to file
 f_handler = RotatingFileHandler(
     LOG_FILE, maxBytes=150000, backupCount=7)
-#f_handler.setLevel(logging.INFO)
-f_handler.setLevel(logging.DEBUG)
+f_handler.setLevel(logging.INFO)
+#f_handler.setLevel(logging.DEBUG)
 
 formatter = logging.Formatter(
         '%(asctime)s: %(levelname)-8s %(message)s')
@@ -253,7 +253,7 @@ class ConfigObject():
         nowIntSecs = (timeInt(d_t.weekday(),
                                str(d_t.hour) + ':' + str(d_t.minute))  * 60) + d_t.second
         #nowInt = timeInt(d_t.weekday(), str(d_t.hour) + ':' + str(d_t.minute))
-        # create a list of seconds until start events 
+        # create a list of seconds until start events
         for event in self.int_schedule:
             secs_to_go = event["intStart"] * 60 - nowIntSecs
             if secs_to_go < 0:
@@ -398,15 +398,17 @@ def boot():
     # check schedule
     # call start if appropriate
     logger.info('boot sequence - OS is ready')
-    checkNet()
+    if checkNet() == True:
+        logger.info('boot sequence - network test OK')
     # this will pause until networking is working
 
     # check clock is up to date
     checkSNTP()
-    # this will pause until networking is working
+    # this will pause until time has been updated
     logger.info('boot sequence - SNTP updated')
 
     if config.checkSchedule():
+        # schedule says we should be playing music, so...
         logger.info('boot sequence - schedule says play')
         startStream(config.station)
     elif os.path.isfile(SILENT_FILE):
@@ -417,7 +419,7 @@ def boot():
         os.remove(SILENT_FILE)
     else:
         # play some sound so we know that things are working
-        checkNet()
+        #checkNet()
         # this should get network working
         player.disconnect()
         if mpdConnect(player, CON_ID):
@@ -434,7 +436,7 @@ def boot():
         endStream()
         player.disconnect()
     # finally
-    logger.info('end of boot sequence')
+    logger.info('boot sequence - complete')
     # start the watchdog service
     wdg_svc(config.nextStartStop())
 
@@ -503,7 +505,7 @@ def startStream(url_stream):
 
 
 def wdg_svc(cdn_timers, event=False):
-    ''' if script is run as a service then use this function 
+    ''' if script is run as a service then use this function
         which should run after the boot sequence
         this def will monitor & will resume, start or stop a stream as appropriate
         use systemd to keep this script running
@@ -564,8 +566,8 @@ def wdg_svc(cdn_timers, event=False):
 def check_stream(elapsed_secs):
     ''' test to see if elapsed playtime is incrementing
         if not try to reconnect
-        return a list of  
-            the latest elapsed time from the player 
+        return a list of
+            the latest elapsed time from the player
             how long this operation took
             restart status
     '''
@@ -581,12 +583,13 @@ def check_stream(elapsed_secs):
         playing_secs = float(status["elapsed"])
         if (elapsed_secs < playing_secs
              or elapsed_secs + playing_secs == 0):
+            # then we should be playing OK
             elapsed_secs = playing_secs
             if elapsed_secs == 0:
                 logger.debug('0 seconds, this is first run or mpd has failed and not restarted')
                 # artificially nudge elapsed time, on next run if playing_secs is still at 0, then will be detected
-                elapsed_secs += 1
-                addntl_msg = ", 0secs detected, possible stall"
+                elapsed_secs = WDG_INT/10  # dummy value that is less than watchdog interval, but more than 0
+                addntl_msg = ", 0secs elapsed, stalled?"
             if config.restartRqd:
                 logger.info('stream resumed %s', addntl_msg)
             config.restartRqd = False
@@ -594,9 +597,10 @@ def check_stream(elapsed_secs):
         else:
             config.restartRqd = True
             logger.warning('elapsed time is stuck %.3f:%s', elapsed_secs, status["elapsed"])
-            elapsed_secs = 0
+            elapsed_secs = WDG_INT/10  # dummy value that is less than watchdog interval, but more than 0
     except KeyError:
-        logger.warning('KeyError, not playing, status:%s', status)
+        logger.warning('KeyError, not playing')
+        logger.debug('status:%s', status)
         config.restartRqd = True
         # break  # out of try
     finally:
@@ -608,6 +612,7 @@ def check_stream(elapsed_secs):
             player.disconnect()
             domain = urllib3.util.parse_url(config.station)  # urllib3.
             #checkNet(domain.scheme + '://' + domain.host + '/')
+            logger.debug('calling checkNet; %s %s', domain.host, domain.scheme)
             checkNet(domain.host, domain.scheme)
             # checkNet(config.station)
             logger.debug('back from checkNet')
@@ -636,18 +641,20 @@ def check_stream(elapsed_secs):
 
 
 #def checkNet(gw='https://google.com/'):
-def checkNet(host='google.com', protocol='https'):
+def checkNet(host='google.com', protocol='http'):
     ''' check that we have a functional network connection
         if not try by restarting dhcpcp, or rebooting
         will loop until we can ping the target
-        ping was replaced because whilst we can ping google.com
-        otehr sites may not respond to ping
+        opening a socket shows connectivity, but does not test bandwidth
+        the previous HTTP session approach requires bandwitdth
+        using the socket test should mean fewer unnecessary restarts ie when network is available, but bandwidth is not
         timeout after about 60 seconds
     '''
     port = 443 if protocol == 'https' else 80
     not_connected = True
     #server_response = "none"
     fail_count = 0
+    logger.debug('check Network')
     while not_connected:
         # attempt socket connection to streaming server
         args = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
@@ -656,23 +663,25 @@ def checkNet(host='google.com', protocol='https'):
             s.settimeout(CON_TIMEOUT)
             try:
                 s.connect(sockaddr)
-            except socket.error:
+            except socket.error as msg:
                 #not_connected = True
-                logger.warn("error connecting to socket")
-            except socket.timeout:
-                #not_connected = True
-                logger.warn("socket timeout")
+                logger.warn("error connecting to socket; %s", msg)
+            #except socket.timeout:
+            # above line catches timeout
+            #    #not_connected = True
+            #    logger.warn("socket timeout")
             else:
                 s.close()
                 not_connected = False
                 logger.debug("socket test OK, host %s, port %i", host, port)
                 # if called with non default host & protocol message above is logged twice, why?
+
         '''
         # this should be changed to use socket on 80 or 443
         logger.debug('check Network')
         session = requests.Session()
         adapter = TimeoutHTTPAdapter(timeout=(3, 6), max_retries=Retry(
-            total=15, 
+            total=15,
             backoff_factor=0,
             status_forcelist=[429, 500, 502, 503, 504]))
         session.mount("http://", adapter)
@@ -709,8 +718,9 @@ def checkNet(host='google.com', protocol='https'):
             #logger.info('reconnect attempt %s failed. Server response: %s', fail_count, server_response)
             logger.info('reconnect attempt %s failed. Server response: %s', fail_count)
             # restart network connection
-            if fail_count == 2:
-                # stop dhcpd, remove lease, restart
+            #if fail_count == 2:
+            if 2 <= fail_count <= 3:
+                # if 2 or 3 fails; stop dhcpd, remove lease, restart
                 command = ['sudo', 'systemctl', 'stop', 'dhcpcd']
                 result = subprocess.run(command, capture_output=True, text=True, check=False)
                 logger.debug('dhcpcd stop:%s\n\t%s\n\t%s',
@@ -728,19 +738,19 @@ def checkNet(host='google.com', protocol='https'):
                              result.returncode, result.stdout, result.stderr)
                 command = ['sudo', 'systemctl', 'daemon-reload']
                 result = subprocess.run(command, capture_output=True, text=True, check=False)
-            elif fail_count > 2:
-                # we have failed repeatedly 
+            elif fail_count > 3:
+                # we have failed repeatedly, restart
                 logger.warning('url test has failed %d times, try a reboot', fail_count)
                 command = ['sudo', 'init', '6']
                 result = subprocess.run(command, check=False)
                 exit()
     else:
         # we have a connection
-        logger.debug("connection confirmed, return")
-        return
+        logger.debug("Network connection confirmed, return")
+        return True
     # if we get here should be connected
     # the problem in development was that the USB wifi was someitmes not detected
-    # adding usbcore.old_scheme_first=1 
+    # adding usbcore.old_scheme_first=1
     # to /boot/cmdline.txt resolved that
 
 
@@ -789,7 +799,7 @@ if __name__ == "__main__":
     actions = ('start', 'stop', 'boot', 'bootsilent', 'test')
     # debugPrint(f'length;{len(argv)} text:{str(argv)}')
     if len(argv) >= 2 and str(argv[1]) in actions:
-        logger.debug(str(argv))
+        logger.debug("arguments passed: %s", str(argv))
         # then call that action
         #action=locals()[argv[1]]
         #action()

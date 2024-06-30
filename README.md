@@ -128,9 +128,11 @@ The service definition must be on the /lib/systemd/system folder. Our service is
 [Unit]
 Description=Radio player
 After=multi-user.target
-StartLimitIntervalSec=60
+StartLimitIntervalSec=180
 StartLimitBurst=5
-# fail if restart more than 5 times in 60 seconds
+# fail if restart more than 5 times in 180 seconds
+StartLimitAction=reboot
+# after 5 fails reboot the system
 
 [Service]
 Type=simple
@@ -138,11 +140,13 @@ User=pi
 ExecStart=python3 /home/pi/radio.py boot
 Restart=always
 #on-failure
-RestartSec=3
+RestartSec=20
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+The lines 'StartLimitAction=reboot' will cause the system to reboot, this might be useful on a remote, unattended system, ie to work around any uncaught error condition.
 
 Now that we have our service we need to activate it:
 
